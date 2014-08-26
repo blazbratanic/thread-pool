@@ -11,16 +11,15 @@ class worker_thread {
  public:
   using pool_type = Pool;
 
-  worker_thread(std::shared_ptr<pool_type> pool) : pool_(pool) {}
+  worker_thread(pool_type* pool) : pool_(pool) {}
 
-  void start() {
-    while (true) {
-      pool->execute_task();
-    }
+  void run() {
+    while (pool_->execute_task()) {}
   }
 
  private:
-  std::shared_ptr<pool_type> pool_;
+  pool_type* pool_;
 };
+
 
 #endif
