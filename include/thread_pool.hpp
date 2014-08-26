@@ -1,3 +1,30 @@
+// Copyright (c) 2014, Blaz Bratanic
+// All rights reserved.
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+// 1. Redistributions of source code must retain the above copyright notice,
+// this list of conditions and the following disclaimer.
+
+// 2. Redistributions in binary form must reproduce the above copyright notice,
+// this list of conditions and the following disclaimer in the documentation
+// and/or other materials provided with the distribution.
+
+// 3. Neither the name of the copyright holder nor the names of its contributors
+// may be used to endorse or promote products derived from this software without
+// specific prior written permission.
+
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
 #ifndef THREAD_POOL_HPP
 #define THREAD_POOL_HPP
 
@@ -27,11 +54,12 @@ class thread_pool {
   using pool_type = thread_pool<Task, SchedulingPolicy>;
   using worker_type = worker_thread<pool_type>;
 
+  friend class worker_thread<pool_type>;
+
  public:
   thread_pool(size_t pool_size) : counter_(0), target_workers_(pool_size) {
     for (size_t i = 0; i < pool_size; ++i) {
-      auto worker = std::make_shared<worker_type>(this);
-      workers_.emplace_back(std::thread(std::bind(&worker_type::run, worker)));
+      add_worker(mtx_);
     }
   }
 
@@ -95,34 +123,61 @@ class thread_pool {
     if (target_workers < target_workers_) {
       target_workers_ = target_workers;
       empty_condition_.notify_all();
-
     } else {
       size_t new_workers = target_workers - workers_.size();
 
       for (size_t w = 0; w < new_workers; ++w) {
-        auto worker = std::make_shared<worker_type>(this);
-        workers_.emplace_back(
-            std::thread(std::bind(&worker_type::run, worker)));
+        add_worker(mtx_);
       }
       target_workers_ = target_workers;
     }
     return true;
   }
 
-  bool empty() { return scheduler_.empty(); }
-  size_t pending() { return pending_tasks_.load(); }
-  size_t active() { return active_tasks_.load(); }
-  size_t size() { return workers_.size(); }
+  bool empty() {
+    std::lock_guard<std::mutex>(mtx_);
+    return scheduler_.empty();
+  }
+  size_t pending() {
+    std::lock_guard<std::mutex>(mtx_);
+    return pending_tasks_.load();
+  }
+  size_t active() {
+    std::lock_guard<std::mutex>(mtx_);
+    return active_tasks_.load();
+  }
+  size_t size() {
+    std::lock_guard<std::mutex>(mtx_);
+    return workers_.size();
+  }
+
+ private:
+  void add_worker(std::mutex mtx_) {
+    auto worker = std::make_shared<worker_type>(this);
+    worker->set_thread_handle(
+        std::make_shared<std::thread>(std::bind(&worker_type::run, worker)));
+  }
+
+  void add_worker_pending_destruction(std::shared_ptr<std::thread> w) {
+    std::lock_guard<std::mutex>(mtx_);
+    workers_pending_destruction_.emplace_back(w);
+  }
+
+
+ private:
+  scheduler_type scheduler_;
 
  private:
   int counter_;
   std::atomic<int> active_tasks_;
   std::atomic<int> pending_tasks_;
-  std::vector<std::thread> workers_;
-  scheduler_type scheduler_;
 
+ private:
+  std::vector<std::shared_ptr<std::thread>> workers_pending_destruction_;
+  size_t workers_;
   size_t target_workers_;
 
+ private:
   std::mutex mtx_;
   std::condition_variable empty_condition_;
 };
