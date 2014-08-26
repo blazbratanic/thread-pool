@@ -6,6 +6,8 @@
 #include <atomic>
 #include <chrono>
 #include <future>
+#include <exception>
+#include <type_traits>
 
 #include "schedulers.hpp"
 
@@ -14,25 +16,20 @@ bool is_ready(std::future<R>& f) {
   return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
 }
 
-template <class Task, class SchedulingPolicy>
+template <class Task, template <class> class SchedulingPolicy = fifo_scheduler>
 class thread_pool {
-  template <typename T_>
-  using decay_t = typename std::decay<T_>::type;
-  template <class T>
-  using result_of_t = typename std::result_of<T>::type;
-
  public:
-  using return_type = decay_t<result_of_<Task>>;
+  using return_type = decltype(Task());
   using task_type = std::tuple<int, int, std::promise<return_type>, Task>;
-  using scheduler_type = SchedulingPolicy<Task>;
+  using scheduler_type = SchedulingPolicy<task_type>;
   using pool_type = thread_pool<Task, SchedulingPolicy>;
 
  public:
-  thread_pool(size_t pool_size) : counter_(0) {}
+  thread_pool(size_t pool_size) : counter_(0), target_workers_(pool_size) {}
 
-  std::future<Task::return_type> schedule_task(Task&& task) {
+  std::future<return_type> schedule_task(Task&& task) {
     std::unique_lock<std::mutex> lk(mtx_);
-    std::promise<Task::return_type> result_promise;
+    std::promise<return_type> result_promise;
     auto result_future = result_promise.get_future();
 
     scheduler_.push(std::make_tuple(0, ++counter_, std::move(result_promise),
@@ -46,14 +43,14 @@ class thread_pool {
   void execute_task() {
     task_type task;
     {
-      std::unique_lock<std::mutex> lk(pool->mtx_);
+      std::unique_lock<std::mutex> lk(mtx_);
 
-      while (pool->scheduler_.empty()) {
-        if (workers_.size() > pool->wanted_workers_) {
+      while (scheduler_.empty()) {
+        if (workers_.size() > target_workers_) {
           return;
         }
 
-        pool->empty_condition_.wait(lk);
+        empty_condition_.wait(lk);
       }
       auto task = scheduler_.top();
       --pending_tasks_;
@@ -61,8 +58,14 @@ class thread_pool {
     }
 
     ++active_tasks_;
-    std::get<3>(task).set_value(std::get<4>(task)());
-    --active_tasks_;
+    try {
+      std::get<3>(task).set_value(std::get<4>(task)());
+      --active_tasks_;
+    }
+    catch (...) {
+      std::get<3>(task).set_exception(std::current_exception());
+      --active_tasks_;
+    }
   }
 
   bool empty() {
@@ -77,7 +80,7 @@ class thread_pool {
   std::vector<std::thread> workers_;
   scheduler_type scheduler_;
 
-  int wanted_workers_;
+  int target_workers_;
 
   std::mutex mtx_;
   std::condition_variable empty_condition_;
