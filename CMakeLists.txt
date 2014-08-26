@@ -14,7 +14,7 @@ endif()
 # set common include folder for module
 #-------------------
 set(COMMON_INCLUDES ${PROJECT_SOURCE_DIR}/include)
-set(EXT_PROJECTS_DIR ${PROJECT_SOURCE_DIR}/third-party)
+set(EXT_PROJECTS_DIR ${PROJECT_SOURCE_DIR}/ext)
 
 #-------------------
 # Module source
