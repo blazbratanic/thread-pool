@@ -1,5 +1,5 @@
-#ifndef TaskHREADED_CONTaskAINER_HPP
-#define TaskHREADED_CONTaskAINER_HPP
+#ifndef SCHEDULERS_HPP
+#define SCHEDULERS_HPP
 
 #include <vector>
 #include <deque>

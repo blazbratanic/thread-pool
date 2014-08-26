@@ -13,15 +13,14 @@ class worker_thread {
 
   worker_thread(std::shared_ptr<pool_type> pool) : pool_(pool) {}
 
-  void run() {
-
-
-
+  void start() {
+    while (true) {
+      pool->execute_task();
+    }
   }
 
  private:
-  std::unique_pyt<std::thread> thread_;
-  std::shared_ptr<Pool> pool_;
+  std::shared_ptr<pool_type> pool_;
 };
 
 #endif
