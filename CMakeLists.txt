@@ -5,6 +5,9 @@ project(${PROJECT_NAME_STR} C CXX)
 if(CMAKE_COMPILER_IS_GNUCXX)
   add_definitions(-Wall -ansi -Wno-deprecated -Werror -pthread -std=c++11)
 endif()
+if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+  add_definitions(-Wall -ansi -Wno-deprecated -Werror -pthread -std=c++11)
+endif()
 
 if(MSVC)
     #vc 2012 fix for vararg templates

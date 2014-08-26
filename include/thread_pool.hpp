@@ -36,6 +36,8 @@
 #include <exception>
 #include <type_traits>
 #include <iostream>
+#include <system_error>
+#include <cassert>
 
 #include "schedulers.hpp"
 #include "worker_thread.hpp"
@@ -57,10 +59,13 @@ class thread_pool {
   friend class worker_thread<pool_type>;
 
  public:
-  thread_pool(size_t pool_size) : counter_(0), target_workers_(pool_size) {
-    for (size_t i = 0; i < pool_size; ++i) {
-      add_worker(mtx_);
-    }
+  thread_pool(size_t pool_size)
+      : counter_(0),
+        active_tasks_(0),
+        pending_tasks_(0),
+        active_worker_count_(0),
+        target_worker_count_(0) {
+    this->resize(pool_size);
   }
 
   ~thread_pool() { shutdown(); }
@@ -79,12 +84,18 @@ class thread_pool {
   }
 
   bool shutdown() {
-    target_workers_ = 0;
+    std::unique_lock<std::mutex> lk(shutdown_mtx_);
+
+    target_worker_count_ = 0;
     empty_condition_.notify_all();
-    for (auto&& w : workers_) {
-      w.join();
+    while (active_worker_count_ != 0) {
+      shutdown_condition_.wait(lk);
     }
-    workers_.clear();
+
+    for (auto&& w : workers_pending_destruction_) {
+      w->join();
+    }
+    workers_pending_destruction_.clear();
     return true;
   }
 
@@ -94,7 +105,7 @@ class thread_pool {
       std::unique_lock<std::mutex> lk(mtx_);
 
       while (scheduler_.empty()) {
-        if (workers_.size() > target_workers_) {
+        if (active_worker_count_ > target_worker_count_) {
           return false;
         }
         empty_condition_.wait(lk);
@@ -117,69 +128,79 @@ class thread_pool {
     return true;
   }
 
-  bool resize(size_t target_workers) {
+  bool resize(size_t target_worker_count) {
     std::unique_lock<std::mutex> lk(mtx_);
+    target_worker_count_ = target_worker_count;
 
-    if (target_workers < target_workers_) {
-      target_workers_ = target_workers;
+    if (active_worker_count_ >= target_worker_count_) {
       empty_condition_.notify_all();
     } else {
-      size_t new_workers = target_workers - workers_.size();
+      size_t new_worker_count =
+          target_worker_count_.load() - active_worker_count_.load();
 
-      for (size_t w = 0; w < new_workers; ++w) {
-        add_worker(mtx_);
+      for (size_t w = 0; w < new_worker_count; ++w) {
+        try {
+          auto worker = std::make_shared<worker_type>(this);
+          worker->set_thread_handle(std::make_shared<std::thread>(
+              std::bind(&worker_type::run, worker)));
+          ++active_worker_count_;
+        }
+        catch (std::system_error const& e) {
+          return false;
+        }
       }
-      target_workers_ = target_workers;
+      assert(active_worker_count_ == target_worker_count_);
     }
     return true;
   }
 
   bool empty() {
-    std::lock_guard<std::mutex>(mtx_);
+    std::lock_guard<std::mutex> lk(mtx_);
     return scheduler_.empty();
   }
+
   size_t pending() {
-    std::lock_guard<std::mutex>(mtx_);
+    std::lock_guard<std::mutex> lk(mtx_);
     return pending_tasks_.load();
   }
+
   size_t active() {
-    std::lock_guard<std::mutex>(mtx_);
+    std::lock_guard<std::mutex> lk(mtx_);
     return active_tasks_.load();
   }
+
   size_t size() {
-    std::lock_guard<std::mutex>(mtx_);
-    return workers_.size();
+    std::lock_guard<std::mutex> lk(mtx_);
+    return active_worker_count_.load();
   }
 
  private:
-  void add_worker(std::mutex mtx_) {
-    auto worker = std::make_shared<worker_type>(this);
-    worker->set_thread_handle(
-        std::make_shared<std::thread>(std::bind(&worker_type::run, worker)));
-  }
-
   void add_worker_pending_destruction(std::shared_ptr<std::thread> w) {
-    std::lock_guard<std::mutex>(mtx_);
+    std::lock_guard<std::mutex> lk(mtx_);
     workers_pending_destruction_.emplace_back(w);
+    --active_worker_count_;
+    shutdown_condition_.notify_all();
   }
-
 
  private:
   scheduler_type scheduler_;
 
  private:
   int counter_;
-  std::atomic<int> active_tasks_;
-  std::atomic<int> pending_tasks_;
+  std::atomic<size_t> active_tasks_;
+  std::atomic<size_t> pending_tasks_;
+
+  std::atomic<size_t> active_worker_count_;
+  std::atomic<size_t> target_worker_count_;
 
  private:
   std::vector<std::shared_ptr<std::thread>> workers_pending_destruction_;
-  size_t workers_;
-  size_t target_workers_;
 
  private:
   std::mutex mtx_;
   std::condition_variable empty_condition_;
+  std::mutex shutdown_mtx_;
+  std::condition_variable shutdown_condition_;
 };
 
 #endif
