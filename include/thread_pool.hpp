@@ -35,6 +35,8 @@ class thread_pool {
     }
   }
 
+  ~thread_pool() { shutdown(); }
+
   std::future<return_type> schedule_task(Task&& task) {
     std::unique_lock<std::mutex> lk(mtx_);
     std::promise<return_type> result_promise;
@@ -54,6 +56,7 @@ class thread_pool {
     for (auto&& w : workers_) {
       w.join();
     }
+    workers_.clear();
     return true;
   }
 
@@ -66,7 +69,6 @@ class thread_pool {
         if (workers_.size() > target_workers_) {
           return false;
         }
-
         empty_condition_.wait(lk);
       }
 
@@ -87,10 +89,30 @@ class thread_pool {
     return true;
   }
 
-  bool empty() {
-    // std::unique_lock<std::mutex> lk(mtx_);
-    return scheduler_.size();
+  bool resize(size_t target_workers) {
+    std::unique_lock<std::mutex> lk(mtx_);
+
+    if (target_workers < target_workers_) {
+      target_workers_ = target_workers;
+      empty_condition_.notify_all();
+
+    } else {
+      size_t new_workers = target_workers - workers_.size();
+
+      for (size_t w = 0; w < new_workers; ++w) {
+        auto worker = std::make_shared<worker_type>(this);
+        workers_.emplace_back(
+            std::thread(std::bind(&worker_type::run, worker)));
+      }
+      target_workers_ = target_workers;
+    }
+    return true;
   }
+
+  bool empty() { return scheduler_.empty(); }
+  size_t pending() { return pending_tasks_.load(); }
+  size_t active() { return active_tasks_.load(); }
+  size_t size() { return workers_.size(); }
 
  private:
   int counter_;
